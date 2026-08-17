@@ -1,7 +1,10 @@
 package com.jeanfranck.aiworker.body;
 
+import com.google.gson.Gson;
 import com.jeanfranck.aiworker.AIWorkerEntities;
 import com.jeanfranck.aiworker.body.action.BotAction;
+import com.jeanfranck.aiworker.brain.WorldSnapshot;
+import com.jeanfranck.aiworker.brain.WorldSnapshotCollector;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.context.CommandContext;
 import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
@@ -28,6 +31,7 @@ import java.util.List;
  */
 public final class AIWorkerCommands {
 	private static final double SEARCH_RADIUS = 32.0;
+	private static final Gson GSON = new Gson();
 
 	private AIWorkerCommands() {
 	}
@@ -48,7 +52,9 @@ public final class AIWorkerCommands {
 										.executes(AIWorkerCommands::attack)))
 						.then(Commands.literal("say")
 								.then(Commands.argument("message", StringArgumentType.greedyString())
-										.executes(AIWorkerCommands::say)))));
+										.executes(AIWorkerCommands::say)))
+						.then(Commands.literal("snapshot")
+								.executes(AIWorkerCommands::snapshot))));
 	}
 
 	private static int spawn(CommandContext<CommandSourceStack> context) {
@@ -90,6 +96,22 @@ public final class AIWorkerCommands {
 	private static int say(CommandContext<CommandSourceStack> context) {
 		String message = StringArgumentType.getString(context, "message");
 		return dispatch(context, worker -> new BotAction.Say(message), "diciendo algo");
+	}
+
+	private static int snapshot(CommandContext<CommandSourceStack> context) {
+		CommandSourceStack source = context.getSource();
+		ServerLevel level = source.getLevel();
+
+		AIWorkerEntity worker = nearestWorker(level, source.getPosition());
+		if (worker == null) {
+			source.sendFailure(Component.literal("No hay ningun aiworker cerca (radio " + (int) SEARCH_RADIUS + " bloques)."));
+			return 0;
+		}
+
+		WorldSnapshot snapshot = WorldSnapshotCollector.collect(worker, level);
+		String json = GSON.toJson(snapshot);
+		source.sendSuccess(() -> Component.literal(json), false);
+		return 1;
 	}
 
 	private interface ActionFactory {

@@ -78,26 +78,75 @@ bloquea el tick loop esperando una respuesta HTTP.
 - [x] Cola de una acción "en curso" por bot, consumida en cada tick — vía
       `Mob.customServerAiStep()`, el hook oficial para IA custom sin goals.
 
-### 4. Recolector de estado del mundo
-- [ ] Snapshot de posición, salud, hambre, inventario
-- [ ] Bloques cercanos en un radio configurable (`BlockPos.iterate`)
-- [ ] Entidades cercanas (`world.getEntitiesByClass`)
-- [ ] Últimos mensajes de chat dirigidos al bot
-- [ ] Serialización a JSON compacto
+### 4. Recolector de estado del mundo + memoria de corto plazo
+- [x] Snapshot de posición, salud, inventario — **hambre e inventario
+      ajustados a la realidad**: `AIWorkerEntity` es un `Mob`, no un
+      `Player`, no tiene hambre (`FoodData` es exclusivo de jugadores) ni
+      inventario propio todavía (los `Mob` solo tienen slots de equipo). Se
+      reporta salud + item en mano; el inventario real se construye en la
+      Fase 7 (donde además hace falta para `PlaceBlock`/`Craft`).
+- [x] Bloques cercanos en un radio configurable — `BlockPos.betweenClosed`
+      (no existe `BlockPos.iterate` en esta versión). Dump crudo en radio
+      chico (2) + resumen categorizado (*points of interest*: cultivos
+      maduros, árboles, cofres, hornos) en radio grande (12), acotado a 5
+      por categoría para no explotar el tamaño del JSON.
+- [x] Entidades cercanas — `Level.getEntitiesOfClass`, radio 16, tope 10,
+      con flag `hostile` (interfaz `Enemy`).
+- [x] Últimos mensajes de chat — `ServerMessageEvents.CHAT_MESSAGE`
+      (Fabric API), buffer global filtrado por cercanía al bot en cada
+      snapshot ("dirigido al bot" = proximidad, el LLM decide si le compete).
+- [x] Serialización a JSON compacto — vía Gson (ya viene con Minecraft, no
+      hizo falta agregar dependencia).
+- [x] **Memoria de corto plazo** (agregado durante el diseño, no estaba en
+      el plan original): historial acotado de (acción→resultado) por bot +
+      campo de "plan" en texto libre que el LLM va a reescribir en la
+      Fase 6. Vive en RAM en `AIWorkerEntity`, no sobrevive un reinicio del
+      server todavía (pendiente de NBT si hace falta).
+- [x] Comando de prueba `/aiworker snapshot` para verificar el JSON sin
+      esperar a que exista el cliente LLM (Fase 6).
 
-### 5. Cliente LLM asíncrono
+### 5. Memoria de largo plazo (vectorial)
+- [ ] SQLite local (`sqlite-jdbc`) — tabla `memories` (texto + embedding BLOB + tags)
+- [ ] Modelo de embeddings local `granite-embedding-97m-multilingual-r2`
+      (ONNX, ~98MB, Apache 2.0, español soportado), empaquetado dentro del
+      jar del mod (no se descarga en runtime — ver STATUS.md, decisión
+      tomada por el riesgo de depender de un link externo en producción)
+- [ ] ONNX Runtime Java + DJL HuggingFace Tokenizers para correr el modelo
+- [ ] Búsqueda por similitud coseno a mano en Java (fuerza bruta, alcanza
+      para la escala esperada — sin índice ANN ni extensión nativa de SQLite)
+- [ ] Acción nueva `Remember(text)` — el LLM decide qué persistir
+- [ ] Búsqueda automática top-K inyectada en cada snapshot (sin acción
+      explícita de "recall")
+- [ ] Configurar Git LFS para el archivo del modelo antes de commitearlo
+      (GitHub bloquea archivos >100MB en git normal)
+
+### 6. Cliente LLM + decision loop (event-driven)
 - [ ] `HttpClient` (`java.net.http`) con `sendAsync()`
-- [ ] Prompt de sistema que fuerza salida JSON estructurada (schema de acción)
+- [ ] Prompt de sistema que fuerza salida JSON estructurada (schema de acción,
+      incluye el campo de "plan" que el LLM reescribe)
 - [ ] Parseo y validación de la respuesta antes de aplicar nada
 - [ ] Reintegración al hilo principal con `server.execute()`
 - [ ] Manejo de timeouts / fallos de red sin crashear el bot
-
-### 6. Decision loop / scheduler
-- [ ] Hook en `ServerTickEvents.END_SERVER_TICK`
-- [ ] Contador de ticks por bot, dispara cada ~60 ticks (3s)
+- [ ] Loop dispara al completar la acción anterior / timeout de acción
+      trabada / evento interruptor (chat, ataque) — no polling ciego cada
+      N segundos como se pensó originalmente
 - [ ] Diseño pensado para escalar a N bots en paralelo
 
-### 7. Pruebas e iteración
+### 7. Acciones ampliadas — lote 1 (inventario básico)
+- [ ] Inventario real en `AIWorkerEntity` (hoy no existe, solo slots de equipo)
+- [ ] `PlaceBlock(BlockPos, item)`
+- [ ] `Equip(item)`
+
+### 8. Crafting y cocina
+- [ ] `Craft(item, count)` — grid 2x2 o mesa de crafteo
+- [ ] `Smelt(furnacePos, item, fuel)` — horno, acción async (tarda varios ticks)
+
+### 9. Agricultura
+- [ ] `Till(pos)` — azada en tierra
+- [ ] `Plant(pos, seed)`
+- [ ] `Harvest(pos)`
+
+### 10. Pruebas e iteración
 - [ ] Deploy en el server de Oracle Cloud
 - [ ] Logging estructurado de cada decisión (estado visto → acción tomada)
 - [ ] Ajuste iterativo del prompt según comportamiento observado
