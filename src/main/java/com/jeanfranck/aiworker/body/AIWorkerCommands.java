@@ -3,6 +3,7 @@ package com.jeanfranck.aiworker.body;
 import com.google.gson.Gson;
 import com.jeanfranck.aiworker.AIWorkerEntities;
 import com.jeanfranck.aiworker.body.action.BotAction;
+import com.jeanfranck.aiworker.brain.DecisionScheduler;
 import com.jeanfranck.aiworker.brain.WorldSnapshot;
 import com.jeanfranck.aiworker.brain.WorldSnapshotCollector;
 import com.mojang.brigadier.arguments.StringArgumentType;
@@ -50,11 +51,21 @@ public final class AIWorkerCommands {
 						.then(Commands.literal("attack")
 								.then(Commands.argument("target", EntityArgument.entity())
 										.executes(AIWorkerCommands::attack)))
+						.then(Commands.literal("follow")
+								.then(Commands.argument("target", EntityArgument.entity())
+										.executes(AIWorkerCommands::follow)))
 						.then(Commands.literal("say")
 								.then(Commands.argument("message", StringArgumentType.greedyString())
 										.executes(AIWorkerCommands::say)))
 						.then(Commands.literal("snapshot")
-								.executes(AIWorkerCommands::snapshot))));
+								.executes(AIWorkerCommands::snapshot))
+						.then(Commands.literal("think")
+								.executes(AIWorkerCommands::think))
+						.then(Commands.literal("auto")
+								.then(Commands.literal("on")
+										.executes(context -> auto(context, true)))
+								.then(Commands.literal("off")
+										.executes(context -> auto(context, false))))));
 	}
 
 	private static int spawn(CommandContext<CommandSourceStack> context) {
@@ -93,6 +104,11 @@ public final class AIWorkerCommands {
 		return dispatch(context, worker -> new BotAction.Attack(target.getId()), "atacando a " + target.getName().getString());
 	}
 
+	private static int follow(CommandContext<CommandSourceStack> context) throws com.mojang.brigadier.exceptions.CommandSyntaxException {
+		Entity target = EntityArgument.getEntity(context, "target");
+		return dispatch(context, worker -> new BotAction.Follow(target.getId()), "siguiendo a " + target.getName().getString());
+	}
+
 	private static int say(CommandContext<CommandSourceStack> context) {
 		String message = StringArgumentType.getString(context, "message");
 		return dispatch(context, worker -> new BotAction.Say(message), "diciendo algo");
@@ -111,6 +127,46 @@ public final class AIWorkerCommands {
 		WorldSnapshot snapshot = WorldSnapshotCollector.collect(worker, level);
 		String json = GSON.toJson(snapshot);
 		source.sendSuccess(() -> Component.literal(json), false);
+		return 1;
+	}
+
+	private static int think(CommandContext<CommandSourceStack> context) {
+		CommandSourceStack source = context.getSource();
+		ServerLevel level = source.getLevel();
+
+		if (!DecisionScheduler.isConfigured()) {
+			source.sendFailure(Component.literal("OPENAI_API_KEY no esta configurada en el server."));
+			return 0;
+		}
+
+		AIWorkerEntity worker = nearestWorker(level, source.getPosition());
+		if (worker == null) {
+			source.sendFailure(Component.literal("No hay ningun aiworker cerca (radio " + (int) SEARCH_RADIUS + " bloques)."));
+			return 0;
+		}
+
+		DecisionScheduler.triggerOnce(worker, level);
+		source.sendSuccess(() -> Component.literal("Pensando..."), true);
+		return 1;
+	}
+
+	private static int auto(CommandContext<CommandSourceStack> context, boolean enabled) {
+		CommandSourceStack source = context.getSource();
+		ServerLevel level = source.getLevel();
+
+		if (enabled && !DecisionScheduler.isConfigured()) {
+			source.sendFailure(Component.literal("OPENAI_API_KEY no esta configurada en el server."));
+			return 0;
+		}
+
+		AIWorkerEntity worker = nearestWorker(level, source.getPosition());
+		if (worker == null) {
+			source.sendFailure(Component.literal("No hay ningun aiworker cerca (radio " + (int) SEARCH_RADIUS + " bloques)."));
+			return 0;
+		}
+
+		DecisionScheduler.setAuto(worker, enabled);
+		source.sendSuccess(() -> Component.literal("Modo automatico " + (enabled ? "activado" : "desactivado") + "."), true);
 		return 1;
 	}
 

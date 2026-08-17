@@ -39,6 +39,18 @@ Bitácora cronológica de pasos, referenciados a la fase/sub-paso de `plan.md`
 | 2026-08-17 | Fase 4 | Verificación de API vía bytecode | Como en fases anteriores, se verificó con `javap`: `BlockPos.betweenClosed` (no `BlockPos.iterate`), `PlayerChatMessage.signedContent()` para el texto plano del chat, `state.is(BlockTags.LOGS)`/`state.is(BlockTags.CROPS)` para categorizar árboles/cultivos, `CropBlock.isMaxAge()` para "cultivo maduro", `Enemy` como interfaz marcadora de hostilidad, `ServerMessageEvents.CHAT_MESSAGE` de Fabric API para capturar chat. |
 | 2026-08-17 | Fase 4 | Ajuste de scope: hambre e inventario | El `plan.md` original pedía snapshot de "hambre e inventario", asumiendo que el bot es como un jugador. Al implementar se confirmó que `AIWorkerEntity` (un `Mob`, no un `Player`) no tiene hambre (`FoodData` es exclusivo de `Player`) ni inventario propio (los `Mob` solo tienen slots de equipo). Se ajustó el snapshot a lo que existe hoy (salud + item en mano); el inventario real queda como prerequisito de la Fase 7 (`PlaceBlock`/`Equip`/`Craft` lo necesitan de verdad, no solo para reportarlo). |
 | 2026-08-17 | Fase 4 | Verificación headless limpia | Con el mundo limpio: `/aiworker snapshot` devolvió JSON correcto con bloques reales del mundo (incluyendo un cofre y un horno colocados a mano para la prueba), *points of interest* categorizados bien, y — lo más importante — el historial de memoria (`BotMemory`) registró correctamente tanto una acción exitosa (`moveTo(...) -> finalizada`) como una rechazada con su motivo (`mineBlock(...) -> rechazada: no hay ningun bloque en ...`). Sin bugs encontrados en este pase. Mundo de pruebas limpiado al final. **Fase 4 cerrada.** |
+| 2026-08-17 | Fase 4 | Chat confirmado en cliente | El usuario probó `runClient`: mensaje real de chat capturado y filtrado por cercanía, apareció correcto en `/aiworker snapshot`. |
+| 2026-08-17 | — | PR #1 mergeado | `feature/fase-4-percepcion-memoria` → `main` sin conflictos (GraphQL de GitHub tuvo un 503 transitorio durante el merge, se resolvió pegándole a la REST API directo con `gh api -X PUT`). |
+| 2026-08-17 | — | Discusión: peso real del modelo local | Al cotizar Fase 5 (memoria vectorial) se descubrió que el "~98MB" que se había hablado solo contaba el modelo — el peso real bundleado (modelo + tokenizer.json 25MB + onnxruntime 54MB + sqlite-jdbc 12MB + DJL tokenizers 19MB) es **~208MB**. Se evaluó "modelo más chico" como alternativa y se descartó tras verificar (`multilingual-e5-small` pesa más, 118MB, pese al nombre; `EmbeddingGemma` es más grande, 300M params) — Granite-97M ya es de los más chicos viables en calidad multilingüe real. |
+| 2026-08-17 | — | Reconsideración: el argumento de "confiabilidad" de local no aplicaba | Se había justificado el modelo local (vs. API externa) por evitar depender de un link externo en producción. Al pensarlo mejor: el bot YA depende de red para lo esencial (el LLM de decisiones es una API externa, Fase 5/6). Blindar solo la memoria contra fallas de red mientras el cerebro entero depende de la red no aporta confiabilidad real, solo suma 200MB y complejidad de build (bundlear ONNX Runtime con binarios nativos en un mod de Fabric es territorio poco transitado). El usuario decidió igual mantener el modelo local (ya elegido, la decisión de descarga es del usuario que instala el mod) pero **se reordenó el plan**: construir primero el decision loop (Fase 5, antes Fase 6) y postergar la memoria de largo plazo (nueva Fase 6) hasta después del MVP. |
+| 2026-08-17 | Fase 5 | Decisión: proveedor LLM | Se eligió **OpenAI**, modelo `gpt-5.6-luna` — verificado como modelo real vía WebFetch a la documentación oficial de OpenAI (no confiar en agregadores de pricing de terceros para el nombre exacto). $0.20/$1.20 por 1M tokens in/out, soporta la Responses API con salida estructurada estricta (`text.format` con `json_schema` + `strict:true`) — mejor que pedir JSON en el prompt a mano, la API rechaza cualquier respuesta que no matchee el schema exacto. Costo estimado: ~$0.0004 por ciclo de decisión, ~$0.6-0.7/hora de bot activo. |
+| 2026-08-17 | Fase 5 | Verificación de API vía documentación oficial | En modo `strict`, OpenAI exige que TODOS los campos del schema estén en `required` (los que no aplican a una acción puntual van tipados nullable, `["integer","null"]`) y `additionalProperties: false`. El JSON de salida del modelo viene en `response.output_text` (o `output[0].content[0].text` como fallback). |
+| 2026-08-17 | Fase 5 | Implementación | `brain/llm/` (OpenAiConfig, ActionSchema, LlmDecision, LlmException, OpenAiClient, SystemPrompt, DecisionValidator) + `brain/DecisionScheduler` enganchado a `ServerTickEvents.END_SERVER_TICK`. Loop event-driven: revisa cada tick qué bots en modo automático están idle o trabados (timeout 10s) y solo a esos les dispara una decisión — nunca más de una decisión en vuelo por bot (`IN_FLIGHT` set). Modo automático opt-in por bot (`/aiworker auto on\|off`), no arranca solo al spawnear. `/aiworker think` para disparar un ciclo manual. |
+| 2026-08-17 | Fase 5 | **Bug real encontrado y arreglado con la key real del usuario** | El usuario probó `/aiworker think` con su `OPENAI_API_KEY` real: la request fue exitosa (`"status":"completed"`, sin error), pero el mod tiraba "Respuesta de OpenAI sin output_text". Causa: el campo `output_text` que documenta la guía oficial es una comodidad que agregan los SDKs oficiales (Python/JS) armando el objeto client-side - **no existe en el JSON crudo de la API**. El array `output` real trae varios items (acá: uno `"type":"reasoning"` con contenido vacío/encriptado, *antes* del `"type":"message"` con la respuesta) - el código asumía que el texto estaba en `output[0]`, que resultó ser el reasoning vacío. Fix: buscar el item con `"type":"message"` dentro de `output`, y dentro de su `content` el item con `"type":"output_text"`. Confirmado con la respuesta real del usuario: el modelo eligió `idle` correctamente (nada relevante cerca) con un `plan` coherente - el diseño del schema/prompt/validación era correcto desde el principio, el bug era puramente de parseo del lado nuestro. |
+| 2026-08-17 | Fase 5 | Verificación headless (sin key real) | Sin `OPENAI_API_KEY`: warning claro al bootear el mod, y `/aiworker think`/`/aiworker auto on` fallan con mensaje explícito en vez de intentar la llamada. Con una key falsa: el request llegó real a OpenAI, la API devolvió 401, se capturó el error async, se reintegró al hilo principal, se logueó — **sin crashear el server**. Confirma que el formato del request es válido a nivel HTTP. **Falta probar el camino feliz (200 real) con la key real del usuario** — no se le pidió compartirla, queda pendiente de que él la setee y pruebe. |
+| 2026-08-17 | Fase 5 | **Prueba real end-to-end exitosa** | El usuario probó con su propia key: `sigueme`, `mina con ese pico la piedra de aqui`, `detente`, `protegeme` — el bot interpretó cada instrucción correctamente vía chat, ejecutó `move_to`/`mine_block`/`say`/`attack` según correspondía, y hasta intentó atacar a un esqueleto que le disparó al jugador cuando le pidieron protección. Reportó no poder plantar semillas (correcto - `Plant` no existe en el schema todavía). El diseño completo (schema, prompt, loop, validación) funciona de punta a punta. |
+| 2026-08-17 | Fase 5 | Ajustes post-prueba real | Dos problemas de UX detectados por el usuario en la prueba real: (1) delay de 2-3s por decisión — se agregó `reasoning:{"effort":"none"}` al request (confirmado con la doc oficial de OpenAI que es el valor recomendado para tareas latency-critical que no necesitan razonar). (2) Movimiento entrecortado seguiendo al jugador ("sigueme") — cada ciclo pedía un `move_to` nuevo a la posición vieja del jugador; se agregó la acción `Follow(entityId)` que persigue en tiempo real tick a tick (reusa el patrón de navegación de `attack`), probada headless moviendo el objetivo a mitad de camino y confirmando que el bot recalcula solo. |
+| 2026-08-17 | — | Nueva fase agregada: pathfinding avanzado | El usuario pidió que el bot pueda puentear con tierra o apilar bloques para subir cuando el camino lo requiera — el pathfinding vanilla de Minecraft no soporta esto (solo camina/salta 1 bloque). Se agregó como Fase 8 de `plan.md` (después del inventario de Fase 7, del que depende), con Baritone como referencia de diseño. No implementado todavía - deliberadamente pospuesto, es un sistema grande. |
 
 ---
 
@@ -98,14 +110,32 @@ verificado, no cuando está "casi listo".
       libre, integrada a `AIWorkerEntity.setAction()`/`customServerAiStep()`.
       Verificado headless: queda registrado tanto lo que sale bien como lo
       que se rechaza (con motivo).
-- [x] `ChatLog` global vía `ServerMessageEvents.CHAT_MESSAGE` — **no
-      probado con chat real todavía** (headless no tiene jugador conectado
-      para mandar mensajes); pendiente de que el usuario lo confirme con
-      `runClient`.
+- [x] `ChatLog` global vía `ServerMessageEvents.CHAT_MESSAGE` — **confirmado
+      por el usuario con `runClient`**: mensaje real de chat capturado y
+      filtrado por cercanía, apareció correcto en `/aiworker snapshot`
+      (`recentChat":[{"sender":"Player134","message":"hola bot, como andas"}]`).
 - [x] Comando `/aiworker snapshot` — probado headless, JSON correcto.
-- [ ] Decisión de arquitectura de memoria (Fase 5, IA): modelo de
-      embeddings, SQLite, `Remember(text)` — **diseñada, no implementada
-      todavía**.
+- [x] `brain/llm/` (OpenAiConfig, ActionSchema, LlmDecision, OpenAiClient,
+      SystemPrompt, DecisionValidator) — cliente async contra la Responses
+      API de OpenAI, salida estructurada estricta, validación completa
+      antes de tocar el mundo.
+- [x] `DecisionScheduler` — loop event-driven vía `END_SERVER_TICK`, modo
+      automático opt-in por bot, timeout de acción trabada (10s), nunca
+      más de una decisión en vuelo por bot.
+- [x] Comandos `/aiworker think` y `/aiworker auto on|off`.
+- [x] Manejo de error de red/API probado con key inválida real (401) — sin
+      crash, logueado, reintegrado al hilo principal correctamente.
+- [x] **Camino feliz confirmado por el usuario con su key real** — bot
+      siguió instrucciones de chat correctamente end-to-end (mover, minar,
+      atacar, hablar). **Fase 5 cerrada.**
+- [x] `BotAction.Follow` + `reasoning:none` — agregados tras feedback real
+      de UX (delay y movimiento entrecortado). Probado headless (follow
+      recalcula solo si el objetivo se mueve).
+- [ ] Decisión de arquitectura de memoria de largo plazo (modelo de
+      embeddings, SQLite, `Remember(text)`) — **diseñada, pospuesta hasta
+      después del MVP** (ver Tree decision).
+- [ ] Pathfinding avanzado (puentes/escaleras, Fase 8 de `plan.md`) —
+      **pedido, no diseñado en detalle todavía, no implementado**.
 
 ---
 
@@ -164,4 +194,179 @@ de bajar a 1.21.11)
    da un resultado que "no cierra" con el patrón esperado (ausencia total
    en toda una rama de versiones, no solo la más nueva), vale la pena
    buscar una explicación estructural antes de asumir "hay que esperar".
+
+Decisión: reordenar plan.md — decision loop (Fase 5) antes que memoria de
+largo plazo (Fase 6, pospuesta)
+├─ Contexto: al cotizar la memoria vectorial se descubrió que el peso real
+│   bundleado es ~208MB (no ~98MB), lo que llevó a reconsiderar si el
+│   modelo local seguia siendo la mejor opcion.
+├─ Insight durante la discusión: el argumento original para justificar
+│   "local" (evitar depender de un link externo que se puede caer en
+│   producción) no se sostiene del todo — el bot YA depende de red para
+│   lo esencial (el LLM de decisiones es una API externa). Blindar solo
+│   la memoria contra fallas de red no hace al sistema más confiable en
+│   la práctica si el cerebro entero depende de que la red funcione.
+├─ El usuario decidió mantener igual el modelo local (su costo/beneficio,
+│   es quien decide si publicar un mod de 200MB), pero coincidió en que
+│   no tenía sentido construir la memoria vectorial antes que el propio
+│   loop de decisión — sin loop, no hay nada que alimente la memoria.
+└─ Elegida: reordenar `plan.md` — Fase 5 = cliente LLM + decision loop
+   (la definición de MVP), Fase 6 = memoria de largo plazo (pospuesta,
+   diseño ya cerrado, se implementa después de tener el MVP andando).
+
+Decisión: proveedor LLM = OpenAI, modelo `gpt-5.6-luna`
+├─ Alternativa: Claude (Anthropic) Haiku 4.5 — se ofreció como
+│   recomendación inicial (rápido/barato, tool use maduro), pero el
+│   usuario eligió OpenAI explícitamente.
+├─ Verificado el modelo real vía WebFetch a la documentación oficial de
+│   OpenAI (no confiar en agregadores de pricing de terceros para el
+│   nombre exacto — el ecosistema de nombres de modelos cambia rápido).
+└─ Elegida: `gpt-5.6-luna` vía la Responses API (`/v1/responses`) con
+   salida estructurada estricta (`text.format.type=json_schema`,
+   `strict:true`) — fuerza el schema exacto de acciones a nivel API, no
+   a nivel de prompt ("por favor respondé en JSON").
 ```
+
+---
+
+## 4. Briefing para un modelo de IA nuevo (contexto de sesión perdido)
+
+Esta sección existe porque la conversación donde se hizo todo este trabajo
+va a perder su contexto. Está escrita para que **vos, un modelo nuevo sin
+memoria de nada de lo anterior**, puedas seguir trabajando en este proyecto
+sin tener que releer todo el historial. Leé esto primero, después `plan.md`
+para el estado exacto de checkboxes, y recién si necesitás el detalle
+histórico completo andá a las secciones 1-3 de arriba.
+
+### Qué es este proyecto
+Mod de Fabric para Minecraft Java Edition **26.2** que agrega un NPC
+(`AIWorkerEntity`) cuyo comportamiento decide un LLM externo vía API. Mod id
+`aiworker`, paquete `com.jeanfranck.aiworker`, repo
+`github.com/JFrnck/AIworker`, licencia MIT. El usuario (jeanfranck) es el
+dueño del proyecto y quien toma las decisiones de producto/arquitectura;
+vos sos quien ejecuta, investiga, y propone, pero **no decidís solo** cosas
+grandes (ver "Cómo se trabaja" abajo).
+
+`CLAUDE.md` (en la raíz del repo) tiene los guardrails obligatorios del
+proyecto — threading, validación de salida del LLM, secretos, alcance de
+cambios. Es de lectura obligatoria, no es opcional. `plan.md` tiene las 11
+fases del roadmap con checkboxes. Este archivo (`STATUS.md`) es el diario
+de a bordo con el *por qué* de cada decisión.
+
+### Estado exacto al momento de escribir esto
+Fases 1 a 5 de `plan.md` **completas y probadas** (build limpio contra
+26.2 real, headless y con el usuario probando en `runClient`/singleplayer
+con su propia `OPENAI_API_KEY`). El bot:
+- Existe en el mundo, sin IA vanilla (`registerGoals()` vacío a propósito).
+- Ejecuta `moveTo`, `mineBlock`, `attack`, `follow`, `say` vía
+  `AIWorkerEntity.customServerAiStep()`.
+- Arma un snapshot JSON del mundo (`WorldSnapshotCollector`) con su estado,
+  bloques cercanos, *points of interest*, entidades, chat reciente, y su
+  propia memoria de corto plazo (`BotMemory`: historial + campo "plan"
+  libre que el LLM reescribe).
+- Tiene un decision loop event-driven (`DecisionScheduler`, enganchado a
+  `ServerTickEvents.END_SERVER_TICK`) que llama a OpenAI (`gpt-5.6-luna`,
+  Responses API, salida estructurada estricta) cuando el bot está idle o
+  trabado (10s), valida la respuesta (`DecisionValidator`) antes de tocar
+  nada, y la aplica.
+- **Confirmado funcionando en vivo por el usuario**: siguió instrucciones
+  de chat reales (moverse, seguir, minar, atacar, hablar) correctamente.
+
+Comandos de prueba disponibles: `/aiworker spawn|move|mine|attack|follow|
+say|snapshot|think|auto on|auto off`.
+
+**Lo próximo pendiente** (en orden de `plan.md`):
+- Fase 6: memoria de largo plazo (vectorial) — **diseñada por completo,
+  cero código escrito**. Ver Tree decision arriba para la discusión larga
+  de por qué se pospuso y el modelo/stack elegido
+  (`granite-embedding-97m-multilingual-r2` local, SQLite, sin vector DB
+  con embeddings si el usuario prefiere la alternativa más simple que se
+  charló al final - **confirmar con el usuario cuál de las dos versiones
+  quiere antes de implementar**, quedó como pregunta abierta sin cerrar
+  del todo).
+- Fase 7: inventario real + `PlaceBlock`/`Equip`.
+- Fase 8: pathfinding avanzado (puentes con tierra, apilar bloques para
+  subir) — pedido explícito del usuario, **no diseñado en detalle**, solo
+  el esqueleto de la fase en `plan.md`. Depende de Fase 7 (necesita
+  materiales en inventario). Referencia de diseño: Baritone.
+- Fases 9-11: crafting/cocina, agricultura, deploy en Oracle Cloud.
+
+### Cómo se trabaja en este proyecto (patrones establecidos, no improvises otra cosa)
+1. **Plan antes de ejecutar.** Para cualquier fase o tarea no trivial, se
+   presenta el plan (qué archivos, qué comandos, qué decisiones quedan
+   abiertas) y se espera confirmación antes de tocar código. Esto lo pidió
+   el usuario explícitamente después de que en la Fase 1 se arrancó a
+   ejecutar sin mostrar el plan primero — no lo repitas.
+2. **Verificar contra el bytecode real antes de escribir código**, nunca
+   asumir nombres de clases/métodos de memoria o de tutoriales. Minecraft
+   26.2 rompe muchísimas convenciones viejas de modding porque **Mojang
+   dejó de ofuscar el juego desde la 26.1** (oct. 2025) — no hay mappings
+   Yarn para esta rama, y muchas clases tienen nombres distintos a los que
+   cualquier LLM entrenado antes de esa fecha va a "recordar" (ejemplos
+   reales que salieron mal: `PathAwareEntity`→`PathfinderMob`,
+   `ResourceLocation`→`Identifier`, `FabricEntityTypeBuilder` ya no existe,
+   `EntityRendererRegistry` deprecado, etc). El patrón que funcionó: buscar
+   el jar real en `.gradle/loom-cache/minecraftMaven/.../minecraft-common-*
+   .jar` (y `-clientOnly-*.jar` para cosas de render), extraer la clase con
+   `unzip`, e inspeccionar con `javap -p`. Mismo cuidado con librerías
+   externas (OpenAI, HuggingFace) — verificar contra documentación oficial
+   actual, no contra lo que "se sabe" de memoria, los nombres de modelos y
+   shapes de API cambian rápido.
+3. **Probar headless antes de pedirle al usuario que pruebe.** El patrón
+   que se usó en toda la sesión: levantar `./gradlew runServer` en
+   background con un named pipe conectado a stdin (`mkfifo`, `exec 3>
+   "$PIPE"`, mandar comandos con `echo "comando" >&3`), esperar, revisar
+   el log, y al final `kill -TERM` al proceso + `pkill -f KnotServer` para
+   no dejar nada corriendo. **Importante**: el file descriptor del pipe NO
+   sobrevive entre llamadas de Bash separadas (cada una es un shell nuevo)
+   - todo el ciclo de vida de un server de prueba (arrancar, mandar
+   comandos, parar) tiene que ir en un solo bloque de comandos. También:
+   **limpiar las entidades de prueba al principio de cada corrida**
+   (`/kill @e[type=aiworker:worker]`) - el mundo de pruebas es persistente
+   entre corridas (`run/world`), y entidades viejas acumuladas causaron un
+   falso negativo real en la Fase 3 (las queries "más cercano" agarraban
+   bots viejos, no el nuevo).
+4. **No hay `timeout` en macOS por defecto** (es de GNU coreutils) - usar
+   `nohup ... &` + `kill` manual en vez de `timeout ...`.
+5. **Nunca manejar la API key del usuario directamente.** Se le dan
+   instrucciones para que la setee como variable de entorno (`export
+   OPENAI_API_KEY=...`) y pruebe él mismo — nunca pedirle que la pegue en
+   el chat.
+6. **Git**: el repo vive en GitHub (`JFrnck/AIworker`), rama `main`. El
+   flujo usado: rama de feature por bloque de trabajo grande, PR, merge
+   (con `gh pr create`/`gh pr merge` — si la API GraphQL de GitHub da 503,
+   `gh api -X PUT repos/.../pulls/N/merge` por REST funciona como
+   alternativa). Solo commitear/pushear cuando el usuario lo pide
+   explícitamente, nunca de forma proactiva.
+7. **Actualizar `plan.md` y `STATUS.md` al cerrar cada fase o decisión
+   importante** - marcar checkboxes, agregar fila a la tabla de
+   Walkthrough, y si es una decisión con alternativas descartadas, agregar
+   al árbol de Tree decision. Es lo que le da continuidad al proyecto
+   entre sesiones (como esta misma).
+
+### Gotchas / lecciones caras (no las repitas)
+- El primer intento de `attack` **crasheó el server entero** porque
+  `Mob.createMobAttributes()` no incluye `ATTACK_DAMAGE` por defecto - hay
+  que agregarlo a mano. Cualquier atributo nuevo que se use (ej. si se
+  necesita `MOVEMENT_SPEED` custom, `FOLLOW_RANGE`, etc.) hay que
+  verificar que esté en `AIWorkerEntity.createAttributes()`.
+- El campo `output_text` que muestra la documentación de OpenAI **no
+  existe en el JSON crudo de la Responses API** - es una comodidad que
+  arman los SDKs oficiales client-side. El array `output` real trae varios
+  items (uno de tipo `"reasoning"` con contenido vacío/encriptado *antes*
+  del `"message"` con la respuesta real) - hay que buscar el item con
+  `"type":"message"`, no asumir que es `output[0]`.
+- `Level.addFreshEntity()` devuelve `boolean` - si no se chequea, un spawn
+  fallido (ej. chunk no cargado) reporta éxito falso.
+- Todas las acciones del cuerpo (`AIWorkerEntity.setAction()`) devuelven un
+  `String` con el motivo de rechazo (o `null` si está OK) - nunca fallan
+  en silencio. Mismo patrón para `DecisionValidator` del lado del LLM. Si
+  agregás una acción nueva, seguí este patrón.
+
+### Cosas que no hay que hacer sin preguntar (de CLAUDE.md, resumido)
+No tocar `gradle.properties` (versiones del toolchain) sin confirmar. No
+correr `runServer`/`runClient` de forma prolongada sin avisar (usar el
+patrón de pipe + timeout manual de arriba). No tocar el server de Oracle
+Cloud de producción desde este repo. No commitear la API key ni loguearla,
+ni siquiera en debug. Whitelist de acciones, no blacklist - nunca ejecutar
+algo que el schema no contemple explícitamente.

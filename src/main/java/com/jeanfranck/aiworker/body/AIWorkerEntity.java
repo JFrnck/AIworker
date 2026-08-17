@@ -27,10 +27,13 @@ public class AIWorkerEntity extends PathfinderMob {
 	private static final double ATTACK_RANGE_SQR = 2.5 * 2.5;
 	private static final double ATTACK_GIVE_UP_RANGE_SQR = 32.0 * 32.0;
 	private static final int ATTACK_COOLDOWN_TICKS = 20;
+	private static final double FOLLOW_STOP_DISTANCE_SQR = 3.0 * 3.0;
+	private static final double FOLLOW_GIVE_UP_RANGE_SQR = 48.0 * 48.0;
 
 	private final BotMemory memory = new BotMemory();
 
 	private BotAction currentAction;
+	private long currentActionStartTick;
 	private int mineTicksElapsed;
 	private int mineTicksRequired;
 	private int attackCooldown;
@@ -51,6 +54,15 @@ public class AIWorkerEntity extends PathfinderMob {
 
 	public BotMemory memory() {
 		return memory;
+	}
+
+	/**
+	 * Ticks transcurridos desde que arranco la accion actual - lo usa
+	 * DecisionScheduler para detectar acciones trabadas y forzar una
+	 * decision nueva. 0 si no hay accion en curso.
+	 */
+	public long ticksOnCurrentAction(long currentGameTime) {
+		return currentAction == null ? 0 : currentGameTime - currentActionStartTick;
 	}
 
 	/**
@@ -94,9 +106,15 @@ public class AIWorkerEntity extends PathfinderMob {
 			if (target == null || !target.isAlive()) {
 				return reject(level, action, "no se encontro el objetivo");
 			}
+		} else if (action instanceof BotAction.Follow follow) {
+			Entity target = level.getEntity(follow.targetEntityId());
+			if (target == null || !target.isAlive()) {
+				return reject(level, action, "no se encontro a quien seguir");
+			}
 		}
 
 		this.currentAction = action;
+		this.currentActionStartTick = level.getGameTime();
 		return null;
 	}
 
@@ -111,6 +129,7 @@ public class AIWorkerEntity extends PathfinderMob {
 			case BotAction.MineBlock m -> "mineBlock(" + m.pos().toShortString() + ")";
 			case BotAction.Attack a -> "attack(#" + a.targetEntityId() + ")";
 			case BotAction.Say s -> "say(\"" + s.message() + "\")";
+			case BotAction.Follow f -> "follow(#" + f.targetEntityId() + ")";
 		};
 	}
 
@@ -144,6 +163,8 @@ public class AIWorkerEntity extends PathfinderMob {
 			finished = tickMineBlock(level, mineBlock);
 		} else if (action instanceof BotAction.Attack attack) {
 			finished = tickAttack(level, attack);
+		} else if (action instanceof BotAction.Follow follow) {
+			finished = tickFollow(level, follow);
 		} else {
 			// Say se resuelve entero en setAction(), nunca deberia quedar en curso.
 			finished = true;
@@ -193,6 +214,30 @@ public class AIWorkerEntity extends PathfinderMob {
 		if (attackCooldown <= 0) {
 			doHurtTarget(level, target);
 			attackCooldown = ATTACK_COOLDOWN_TICKS;
+		}
+		return false;
+	}
+
+	/**
+	 * A diferencia de MoveTo (un punto fijo), Follow re-apunta la navegacion
+	 * al target en cada tick mientras esta vivo y cerca - nunca "termina"
+	 * por si sola. El mecanismo de accion trabada de DecisionScheduler
+	 * (10s) se encarga de volver a consultar al LLM periodicamente aunque
+	 * el seguimiento siga en curso, sin bloquear el movimiento fluido
+	 * mientras tanto.
+	 */
+	private boolean tickFollow(ServerLevel level, BotAction.Follow action) {
+		Entity target = level.getEntity(action.targetEntityId());
+		if (target == null || !target.isAlive()) {
+			return true;
+		}
+		if (distanceToSqr(target) > FOLLOW_GIVE_UP_RANGE_SQR) {
+			return true;
+		}
+		if (distanceToSqr(target) > FOLLOW_STOP_DISTANCE_SQR) {
+			getNavigation().moveTo(target, MOVE_SPEED);
+		} else {
+			getNavigation().stop();
 		}
 		return false;
 	}

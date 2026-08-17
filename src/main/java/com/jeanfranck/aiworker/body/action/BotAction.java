@@ -20,4 +20,8 @@ public sealed interface BotAction {
 
 	record Say(String message) implements BotAction {
 	}
+
+	/** Persecucion continua tick a tick, a diferencia de MoveTo que apunta a un punto fijo. */
+	record Follow(int targetEntityId) implements BotAction {
+	}
 }
