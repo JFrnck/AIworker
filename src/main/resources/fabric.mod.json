@@ -1,0 +1,28 @@
+{
+	"schemaVersion": 1,
+	"id": "aiworker",
+	"version": "${version}",
+	"name": "AI Worker",
+	"description": "NPC controlado por un LLM externo via API: decide sus acciones (moverse, minar, atacar, hablar) de forma autonoma.",
+	"authors": [
+		"jeanfranck"
+	],
+	"contact": {},
+	"license": "MIT",
+	"environment": "*",
+	"entrypoints": {
+		"main": [
+			"com.jeanfranck.aiworker.AIWorkerMod"
+		],
+		"client": [
+			"com.jeanfranck.aiworker.AIWorkerModClient"
+		]
+	},
+	"mixins": [],
+	"depends": {
+		"fabricloader": ">=0.19.3",
+		"minecraft": "~26.2",
+		"java": ">=25",
+		"fabric-api": "*"
+	}
+}

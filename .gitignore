@@ -1,0 +1,24 @@
+# Gradle
+.gradle/
+build/
+out/
+
+# Loom run dirs (server/client locales de prueba)
+run/
+
+# IDE
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+bin/
+
+# OS
+.DS_Store
+
+# Secrets - la API key del LLM nunca se commitea (CLAUDE.md)
+.env
+*.env
+secrets.properties
+llmbot.secrets.json
