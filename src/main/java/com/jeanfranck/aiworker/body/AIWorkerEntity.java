@@ -1,6 +1,7 @@
 package com.jeanfranck.aiworker.body;
 
 import com.jeanfranck.aiworker.body.action.BotAction;
+import com.jeanfranck.aiworker.brain.BotMemory;
 import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerLevel;
@@ -27,6 +28,8 @@ public class AIWorkerEntity extends PathfinderMob {
 	private static final double ATTACK_GIVE_UP_RANGE_SQR = 32.0 * 32.0;
 	private static final int ATTACK_COOLDOWN_TICKS = 20;
 
+	private final BotMemory memory = new BotMemory();
+
 	private BotAction currentAction;
 	private int mineTicksElapsed;
 	private int mineTicksRequired;
@@ -46,17 +49,23 @@ public class AIWorkerEntity extends PathfinderMob {
 		return currentAction;
 	}
 
+	public BotMemory memory() {
+		return memory;
+	}
+
 	/**
 	 * Arranca una accion nueva, reemplazando la que este en curso (si habia
 	 * una accion de minado a medio terminar, se limpia el overlay de rotura).
 	 * Devuelve null si arranco bien, o un motivo legible si la rechazo -
-	 * nunca falla en silencio.
+	 * nunca falla en silencio. Cada intento (rechazado o no) queda anotado
+	 * en la memoria de corto plazo.
 	 */
 	public String setAction(ServerLevel level, BotAction action) {
 		abandonCurrentAction(level);
 
 		if (action instanceof BotAction.Say say) {
 			say(level, say.message());
+			memory.addRecord(describe(action), "enviado", level.getGameTime());
 			return null;
 		}
 
@@ -67,28 +76,42 @@ public class AIWorkerEntity extends PathfinderMob {
 			BlockPos pos = mineBlock.pos();
 			BlockState state = level.getBlockState(pos);
 			if (state.isAir()) {
-				return "no hay ningun bloque en " + pos.toShortString();
+				return reject(level, action, "no hay ningun bloque en " + pos.toShortString());
 			}
 			float destroySpeed = state.getDestroySpeed(level, pos);
 			if (destroySpeed < 0) {
-				return "ese bloque es indestructible";
+				return reject(level, action, "ese bloque es indestructible");
 			}
 			double distSqr = distanceToSqr(pos.getX() + 0.5, pos.getY() + 0.5, pos.getZ() + 0.5);
 			if (distSqr > MINE_REACH_SQR) {
-				return "el bloque esta muy lejos (" + String.format("%.1f", Math.sqrt(distSqr))
-						+ " bloques, maximo " + Math.sqrt(MINE_REACH_SQR) + ")";
+				return reject(level, action, "el bloque esta muy lejos (" + String.format("%.1f", Math.sqrt(distSqr))
+						+ " bloques, maximo " + Math.sqrt(MINE_REACH_SQR) + ")");
 			}
 			this.mineTicksRequired = Math.max(1, Math.round(destroySpeed * 20.0f));
 			this.mineTicksElapsed = 0;
 		} else if (action instanceof BotAction.Attack attack) {
 			Entity target = level.getEntity(attack.targetEntityId());
 			if (target == null || !target.isAlive()) {
-				return "no se encontro el objetivo";
+				return reject(level, action, "no se encontro el objetivo");
 			}
 		}
 
 		this.currentAction = action;
 		return null;
+	}
+
+	private String reject(ServerLevel level, BotAction action, String reason) {
+		memory.addRecord(describe(action), "rechazada: " + reason, level.getGameTime());
+		return reason;
+	}
+
+	private static String describe(BotAction action) {
+		return switch (action) {
+			case BotAction.MoveTo m -> "moveTo(" + m.pos().toShortString() + ")";
+			case BotAction.MineBlock m -> "mineBlock(" + m.pos().toShortString() + ")";
+			case BotAction.Attack a -> "attack(#" + a.targetEntityId() + ")";
+			case BotAction.Say s -> "say(\"" + s.message() + "\")";
+		};
 	}
 
 	private void abandonCurrentAction(ServerLevel level) {
@@ -130,6 +153,7 @@ public class AIWorkerEntity extends PathfinderMob {
 			if (action instanceof BotAction.MineBlock mineBlock) {
 				level.destroyBlockProgress(getId(), mineBlock.pos(), -1);
 			}
+			memory.addRecord(describe(action), "finalizada", level.getGameTime());
 			this.currentAction = null;
 		}
 	}

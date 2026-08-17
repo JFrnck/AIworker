@@ -32,7 +32,13 @@ Bitácora cronológica de pasos, referenciados a la fase/sub-paso de `plan.md`
 | 2026-08-17 | Fase 3 | **Bug real encontrado y arreglado**: crash del server al atacar | Primera prueba headless: el bot ataca, el server tira `IllegalArgumentException: Can't find attribute minecraft:attack_damage` dentro de `Mob.doHurtTarget` y **el server entero se cae** (`ReportedException`, "Stopping server"). Causa: `Mob.createMobAttributes()` no incluye `ATTACK_DAMAGE` por defecto (los mobs vanilla lo agregan ellos mismos). Fix: `createAttributes()` ahora agrega `Attributes.ATTACK_DAMAGE` y `Attributes.ATTACK_KNOCKBACK` explícitamente. Esto es exactamente el tipo de bug que la prueba headless post-fase esta pensada para atrapar antes de decirle al usuario "andá y probalo". |
 | 2026-08-17 | Fase 3 | Bug menor encontrado y arreglado | `AIWorkerCommands.spawn()` ignoraba el valor de retorno (`boolean`) de `Level.addFreshEntity(...)` — si fallaba (ej. chunk no cargado), el comando igual reportaba "Bot spawneado." Corregido para chequear el resultado y reportar error. |
 | 2026-08-17 | Fase 3 | Falso negativo en las pruebas (lección de metodología) | Probando `move`, el bot parecía no moverse nunca (posición idéntica en cada chequeo). Tras varias corridas de prueba sin limpiar el mundo persistente (`run/world`) entre cada una, se habían acumulado 8 bots y 6 chanchos de pruebas anteriores — las queries "@e[...,limit=1]" y "el bot más cercano" agarraban entidades viejas al azar, no la recién creada. Con logging temporal (`getNavigation().moveTo(...)` devuelve `boolean`, mas `isDone()`) se confirmó que la navegación sí arrancaba (`started=true`). Después de `/kill @e[type=aiworker:worker]` + `/kill @e[type=minecraft:pig]` al principio de cada corrida, `move` funcionó perfecto (llegó al destino exacto). **Lección**: limpiar el mundo persistente entre corridas de prueba, o usar un mundo nuevo por corrida, para no confundir resultados. |
+| 2026-08-17 | — | Git | Repo inicializado y pusheado a `github.com/JFrnck/AIworker` (rama `main`). El remoto ya traía un `LICENSE` (MIT, generado por GitHub al crear el repo) — se mergeó con `--allow-unrelated-histories` antes del push, sin conflictos. Pendiente para cuando lleguemos a empaquetar el modelo de embeddings (~98MB, Fase 5 de IA): configurar Git LFS para ese archivo antes de commitearlo, para no pasarse del límite de 100MB por archivo de GitHub. |
 | 2026-08-17 | Fase 3 | Verificación final limpia | Con el mundo limpio (`/kill` de entidades de prueba al inicio): `move` llegó al destino, `mine` destruyó el bloque en ~1.5s, `attack` mató a un chancho de 10 HP en <8s sin crashear, `say` broadcasteó `<AIWorker> hola, soy el bot`. **Fase 3 cerrada.** Se limpiaron las entidades de prueba del mundo persistente al final (`/kill` + `save-all`) para no dejar el mundo de pruebas lleno de bots/chanchos viejos. |
+| 2026-08-17 | — | Discusión de arquitectura (LLM como agente) | El usuario pidió pensar la Fase 4+ como un agent loop (percepción → memoria → decisión → acción), similar al loop de un agente de código, en vez de un polling ciego. Se definieron 4 piezas: percepción (world snapshot enriquecido), memoria de corto plazo (historial acotado + plan en texto libre, RAM), memoria de largo plazo (vectorial, SQLite local), loop event-driven. Se reestructuró `plan.md` de 7 a 10 fases para reflejarlo. |
+| 2026-08-17 | — | Decisión: modelo de embeddings | Para la memoria de largo plazo (Fase 5, todavía no implementada) se eligió `granite-embedding-97m-multilingual-r2` (IBM, Apache 2.0, 97M params, 384 dim, español en el tier de soporte reforzado, ~98MB en ONNX cuantizado) — verificado vía WebFetch a la blog post oficial de HuggingFace. Se descartó `all-MiniLM-L6-v2` por ser mono-idioma inglés (todo el texto del mod es español). Se eligió correrlo local (ONNX Runtime Java + DJL HuggingFace Tokenizers) en vez de llamar a una API externa de embeddings, para no sumar otra dependencia de red/costo al riesgo de latencia que ya menciona `plan.md`. Se eligió empaquetar el modelo dentro del jar del mod en vez de descargarlo en el primer arranque — evita el riesgo real de que un link de Hugging Face caído/movido rompa el mod en producción (sin conexión a internet en runtime, determinístico). Implica configurar Git LFS antes de commitear ese archivo (~98MB, cerca del límite de 100MB de GitHub). |
+| 2026-08-17 | Fase 4 | Verificación de API vía bytecode | Como en fases anteriores, se verificó con `javap`: `BlockPos.betweenClosed` (no `BlockPos.iterate`), `PlayerChatMessage.signedContent()` para el texto plano del chat, `state.is(BlockTags.LOGS)`/`state.is(BlockTags.CROPS)` para categorizar árboles/cultivos, `CropBlock.isMaxAge()` para "cultivo maduro", `Enemy` como interfaz marcadora de hostilidad, `ServerMessageEvents.CHAT_MESSAGE` de Fabric API para capturar chat. |
+| 2026-08-17 | Fase 4 | Ajuste de scope: hambre e inventario | El `plan.md` original pedía snapshot de "hambre e inventario", asumiendo que el bot es como un jugador. Al implementar se confirmó que `AIWorkerEntity` (un `Mob`, no un `Player`) no tiene hambre (`FoodData` es exclusivo de `Player`) ni inventario propio (los `Mob` solo tienen slots de equipo). Se ajustó el snapshot a lo que existe hoy (salud + item en mano); el inventario real queda como prerequisito de la Fase 7 (`PlaceBlock`/`Equip`/`Craft` lo necesitan de verdad, no solo para reportarlo). |
+| 2026-08-17 | Fase 4 | Verificación headless limpia | Con el mundo limpio: `/aiworker snapshot` devolvió JSON correcto con bloques reales del mundo (incluyendo un cofre y un horno colocados a mano para la prueba), *points of interest* categorizados bien, y — lo más importante — el historial de memoria (`BotMemory`) registró correctamente tanto una acción exitosa (`moveTo(...) -> finalizada`) como una rechazada con su motivo (`mineBlock(...) -> rechazada: no hay ningun bloque en ...`). Sin bugs encontrados en este pase. Mundo de pruebas limpiado al final. **Fase 4 cerrada.** |
 
 ---
 
@@ -82,6 +88,24 @@ verificado, no cuando está "casi listo".
 - [ ] Warning de Gradle "deprecated features, incompatible con Gradle 10" —
       pendiente de investigar si viene del plugin fabric-loom 1.17.19 o de
       algo propio. No bloquea el build, es solo un aviso.
+- [x] Repo en GitHub (`JFrnck/AIworker`), commit inicial pusheado sin
+      conflictos (merge con el `LICENSE` que trae GitHub por defecto).
+- [x] `WorldSnapshot`/`WorldSnapshotCollector` — self, bloques crudos
+      (radio chico), *points of interest* categorizados (radio grande,
+      acotado), entidades cercanas, chat reciente filtrado por cercanía,
+      historial + plan de `BotMemory`. Serializado a JSON con Gson.
+- [x] `BotMemory` — historial acotado de (acción→resultado) + plan en texto
+      libre, integrada a `AIWorkerEntity.setAction()`/`customServerAiStep()`.
+      Verificado headless: queda registrado tanto lo que sale bien como lo
+      que se rechaza (con motivo).
+- [x] `ChatLog` global vía `ServerMessageEvents.CHAT_MESSAGE` — **no
+      probado con chat real todavía** (headless no tiene jugador conectado
+      para mandar mensajes); pendiente de que el usuario lo confirme con
+      `runClient`.
+- [x] Comando `/aiworker snapshot` — probado headless, JSON correcto.
+- [ ] Decisión de arquitectura de memoria (Fase 5, IA): modelo de
+      embeddings, SQLite, `Remember(text)` — **diseñada, no implementada
+      todavía**.
 
 ---
 
